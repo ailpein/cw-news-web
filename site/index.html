@@ -36,6 +36,7 @@
   .check { display: flex; gap: 10px; align-items: flex-start; margin: 8px 0; }
   .check input { width: 20px; height: 20px; margin-top: 1px; accent-color: var(--accent); flex: none; }
   .buttons { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .buttons.four { grid-template-columns: 1fr 1fr 1fr 1fr; }
   button { font-size: 15px; font-weight: 600; padding: 12px 6px; border: 0; border-radius: 10px;
     background: var(--btn); color: var(--btn-fg); cursor: pointer; touch-action: manipulation; }
   button:active { filter: brightness(0.9); }
@@ -62,11 +63,13 @@
   <div class="row"><span id="gapLabel"></span><input type="range" id="gap" min="0" max="30" step="1"></div>
 
   <label class="check"><input type="checkbox" id="desc"> <span>Send summary after headline</span></label>
+  <label class="check"><input type="checkbox" id="simple"> <span>Simple interpunction (send only . , = ? and drop : ; " ' etc.)</span></label>
   <label class="check"><input type="checkbox" id="live"> <span>Show text while sending (off = reveal after each item)</span></label>
   <label class="check"><input type="checkbox" id="wake"> <span>Keep screen on while sending</span></label>
 
-  <div class="buttons">
+  <div class="buttons four">
     <button id="start" class="primary">Start</button>
+    <button id="pause">Pause</button>
     <button id="skip">Skip</button>
     <button id="stop">Stop</button>
   </div>
@@ -80,7 +83,7 @@
   <div id="copy"></div>
 
   <footer>
-    <div id="footer">CW News (v1.3) SP2Z</div>
+    <div id="footer">CW News (v1.4) SP2Z</div>
     <div id="disclaimer">Amateur app, provided free of charge and without any warranty. Use at your own risk. News comes from the public RSS feeds of the listed services; the author is not responsible for their content or availability.</div>
   </footer>
 </main>
@@ -117,7 +120,17 @@ const MORSE = {
   "$": "...-..-", "@": ".--.-.",
 };
 
-function normalize(input) {
+// "Simple interpunction": keep only . , = ? (and + = end of message); map or drop the rest
+const SIMPLE_KEEP = new Set([".", ",", "?", "=", "+"]);
+function simplify(s) {
+  s = s.replace(/!/g, ".").replace(/;/g, ",")
+       .replace(/['"]/g, "");                          // DON'T -> DONT, quotes vanish
+  let out = "";
+  for (const c of s) out += (/[A-Z0-9 ]/.test(c) || SIMPLE_KEEP.has(c)) ? c : " ";
+  return out;
+}
+
+function normalize(input, simple) {
   let s = input
     .replace(/[‘’]/g, "'")
     .replace(/[“”„«»]/g, '"')
@@ -129,6 +142,7 @@ function normalize(input) {
   s = s.toUpperCase();
   let out = "";
   for (const c of s) out += (c in MORSE) ? c : " ";
+  if (simple) out = simplify(out);
   return out.replace(/\s+/g, " ").trim();
 }
 
@@ -224,7 +238,7 @@ const SILENCE_URL = (() => {
 
 // ------------------------------------------------------------------ settings
 const DEFAULTS = { feed: "bbc-top", wpm: 20, eff: 50, tone: 600, vol: 70, max: 10, gap: 5,
-                   desc: true, live: false, wake: false };
+                   desc: true, simple: false, live: false, wake: false };
 let S = { ...DEFAULTS };
 try { Object.assign(S, JSON.parse(localStorage.getItem("cwnews") || "{}")); } catch (e) {}
 const save = () => { try { localStorage.setItem("cwnews", JSON.stringify(S)); } catch (e) {} };
@@ -255,7 +269,7 @@ for (const k in LABELS) {
   el.oninput = () => { S[k] = Number(el.value); save(); refreshLabels(); };
 }
 refreshLabels();
-for (const k of ["desc", "live", "wake"]) {
+for (const k of ["desc", "simple", "live", "wake"]) {
   const el = $(k); el.checked = S[k];
   el.onchange = () => { S[k] = el.checked; save(); if (k === "wake") updateWakeLock(); };
 }
@@ -265,7 +279,7 @@ const audio = new Audio();
 audio.preload = "auto";
 audio.setAttribute("playsinline", "");
 
-let running = false;
+let running = false, paused = false;
 let queue = [], seen = new Set(), first = true, lastFeed = null;
 let current = null;          // { text, total, idx, render }
 let waitTimer = null, progressTimer = null;
@@ -291,7 +305,7 @@ async function nextItem() {
   }
   const it = queue.shift();
   const raw = (S.desc && it.desc) ? `${it.title} = ${it.desc} +` : `${it.title} +`;
-  current = { text: normalize(raw), idx: it.idx, total: it.total, render: null };
+  current = { text: normalize(raw, S.simple), idx: it.idx, total: it.total, render: null };
   playFrom(0);
 }
 
@@ -332,16 +346,46 @@ function playFrom(pos) {
   if (current.render) URL.revokeObjectURL(current.render.url);
   const r = render(current.text, pos, params(), S.gap);
   current.render = r;
-  setStatus(`Sending ${current.idx}/${current.total} · ${S.wpm} WPM · ${S.tone} Hz`);
+  showSending();
   setText(S.live ? current.text.slice(0, pos) : "(text will appear after this item)");
   audio.src = r.url;
-  audio.play().catch(() => setStatus("Tap Start to allow sound"));
+  if (!paused) audio.play().catch(() => setStatus("Tap Start to allow sound"));
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: `CW News ${current.idx}/${current.total}`, artist: feedName(S.feed), album: "SP2Z",
     });
   }
 }
+
+function showSending() {
+  if (!current) return;
+  setStatus(paused ? `Paused at item ${current.idx}/${current.total} · tap Resume`
+                   : `Sending ${current.idx}/${current.total} · ${S.wpm} WPM · ${S.tone} Hz`);
+}
+
+function setPaused(p) {
+  paused = p;
+  $("pause").textContent = p ? "Resume" : "Pause";
+  if ("mediaSession" in navigator) navigator.mediaSession.playbackState = p ? "paused" : "playing";
+}
+
+function pause() {
+  if (!running || paused) return;
+  setPaused(true);
+  audio.pause();
+  if (current) showSending(); else setStatus("Paused · tap Resume");
+}
+
+function resume() {
+  if (!running || !paused) return;
+  setPaused(false);
+  if (current && current.render && audio.src === current.render.url && !audio.ended) {
+    showSending();
+    audio.play().catch(() => setStatus("Tap Resume to allow sound"));
+  } else nextItem();
+}
+
+const togglePause = () => paused ? resume() : pause();
 
 /** Characters fully sent at the current playback position. */
 function sentNow() {
@@ -372,7 +416,7 @@ function start() {
   // play something synchronously inside the tap, so iPhone allows audio from now on
   audio.src = SILENCE_URL;
   audio.play().catch(() => {});
-  if (running) return;
+  if (running) { if (paused) resume(); return; }
   running = true;
   clearInterval(progressTimer);
   progressTimer = setInterval(tick, 100);
@@ -382,6 +426,7 @@ function start() {
 
 function stop() {
   running = false;
+  setPaused(false);
   clearTimeout(waitTimer);
   clearInterval(progressTimer);
   audio.pause();
@@ -394,6 +439,7 @@ function stop() {
 
 function skip() {
   if (!running) return;
+  setPaused(false);
   audio.pause();
   if (current) setText(current.text);
   nextItem();
@@ -404,6 +450,7 @@ function rewind(kind) {
   const sent = sentNow(), t = current.text;
   const pos = kind === "sentence" ? backSentence(t, sent) : backWords(t, sent, kind === "3" ? 3 : 1);
   audio.pause();
+  setPaused(false);
   playFrom(pos);
 }
 
@@ -419,6 +466,7 @@ document.addEventListener("visibilitychange", updateWakeLock);
 $("start").onclick = start;
 $("stop").onclick = stop;
 $("skip").onclick = skip;
+$("pause").onclick = togglePause;
 $("backSentence").onclick = () => rewind("sentence");
 $("back3").onclick = () => rewind("3");
 $("back1").onclick = () => rewind("1");
@@ -427,8 +475,8 @@ $("back1").onclick = () => rewind("1");
 if ("mediaSession" in navigator) {
   const ms = navigator.mediaSession;
   const h = (a, f) => { try { ms.setActionHandler(a, f); } catch (e) {} };
-  h("play", () => audio.play());
-  h("pause", () => audio.pause());
+  h("play", () => { if (paused) resume(); else audio.play().catch(() => {}); });
+  h("pause", pause);
   h("nexttrack", skip);
   h("previoustrack", () => rewind("1"));
   h("stop", stop);
