@@ -12,7 +12,7 @@ News headlines sent in Morse code (CW), in the browser. Works on iPhone, Android
 Open the page in **Safari** → Share → **Add to Home Screen**. Tap **Start**.
 Lock-screen controls: ⏭ = Skip, ⏮ = back 1 word.
 
-**Pause / Resume** holds the transmission mid-character and continues from the same spot. Skip or a rewind button also resumes.
+**Pause / Resume** holds the transmission mid-character and continues from the same spot. Skip or a rewind button also resumes. On Resume the current settings are read again (speed, Farnsworth, tone, volume, Simple interpunction); if anything changed, the current word is restarted with the new settings.
 
 **Simple interpunction** (checkbox): sends only `. , = ?` (plus the closing `+`). `!` becomes `.`, `;` becomes `,`, apostrophes and quotes are dropped (DON'T → DONT), other signs such as `: - / ( )` become a word gap.
 

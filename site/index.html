@@ -83,7 +83,7 @@
   <div id="copy"></div>
 
   <footer>
-    <div id="footer">CW News (v1.4) SP2Z</div>
+    <div id="footer">CW News (v1.5) SP2Z</div>
     <div id="disclaimer">Amateur app, provided free of charge and without any warranty. Use at your own risk. News comes from the public RSS feeds of the listed services; the author is not responsible for their content or availability.</div>
   </footer>
 </main>
@@ -154,6 +154,17 @@ function wordStarts(t) {
 function backWords(t, pos, n) {
   const s = wordStarts(t).filter(i => i < pos);
   return s.length ? s[Math.max(0, s.length - n)] : 0;
+}
+/** Where to restart after settings changed: start of the word in progress. */
+function resumePos(t, sent) {
+  if (sent <= 0 || sent >= t.length || t[sent - 1] === " ") return sent;
+  return backWords(t, sent, 1);
+}
+/** Same word position in a re-normalized text (word count based). */
+function mapPos(oldT, pos, newT) {
+  if (pos >= oldT.length) return newT.length;
+  const k = wordStarts(oldT).filter(i => i < pos).length, ns = wordStarts(newT);
+  return k < ns.length ? ns[k] : newT.length;
 }
 function sentenceStarts(t) {
   const r = [0];
@@ -227,7 +238,7 @@ function render(text, start, p, tailSec) {
   str(36, "data"); v.setUint32(40, n * 2, true);
   const pcm = new Int16Array(buf, 44, n); let o = 0;
   for (const a of parts) { pcm.set(a, o); o += a.length; }
-  return { url: URL.createObjectURL(new Blob([buf], { type: "audio/wav" })), marks, textEnd, start };
+  return { url: URL.createObjectURL(new Blob([buf], { type: "audio/wav" })), marks, textEnd, start, p: { ...p } };
 }
 
 // a tiny silent WAV, played on the first tap to unlock audio on iPhone
@@ -305,7 +316,7 @@ async function nextItem() {
   }
   const it = queue.shift();
   const raw = (S.desc && it.desc) ? `${it.title} = ${it.desc} +` : `${it.title} +`;
-  current = { text: normalize(raw, S.simple), idx: it.idx, total: it.total, render: null };
+  current = { raw, simple: S.simple, text: normalize(raw, S.simple), idx: it.idx, total: it.total, render: null };
   playFrom(0);
 }
 
@@ -380,8 +391,22 @@ function resume() {
   if (!running || !paused) return;
   setPaused(false);
   if (current && current.render && audio.src === current.render.url && !audio.ended) {
-    showSending();
-    audio.play().catch(() => setStatus("Tap Resume to allow sound"));
+    // re-read settings: if anything changed, restart the current word with the new ones
+    const p = params(), old = current.render.p;
+    const changed = current.simple !== S.simple || Object.keys(p).some(k => p[k] !== old[k]);
+    if (!changed) {
+      showSending();
+      audio.play().catch(() => setStatus("Tap Resume to allow sound"));
+      return;
+    }
+    let pos = resumePos(current.text, sentNow());
+    if (current.simple !== S.simple) {
+      const t = normalize(current.raw, S.simple);
+      pos = mapPos(current.text, pos, t);
+      current.text = t; current.simple = S.simple;
+    }
+    audio.pause();
+    playFrom(pos);
   } else nextItem();
 }
 
